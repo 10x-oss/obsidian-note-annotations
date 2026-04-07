@@ -1,240 +1,260 @@
-import { useState, useRef, useEffect } from "react";
-import { setIcon } from "obsidian";
+import { useMemo, useState } from "react";
 import { Notice } from "obsidian";
+import { parseThreads } from "@/lib/parser";
+import type { Annotation, AnnotationDraft, AnnotationType, ThreadDisplayMode } from "@/types";
+import { ANNOTATION_TYPES } from "@/types";
 import { cn } from "@/lib/utils";
 
 interface CommentPopoverProps {
-	initialComment?: string;
-	initialColor?: string;
-	colorOptions: string[];
+	annotation: Annotation;
 	className: string;
-	highlightText: string;
-	onSave: ({
-		comment,
-		remove,
-	}: {
-		comment?: string;
-		remove?: boolean;
-	}) => void;
-	addNewFileFn: () => void;
-	popoverRef: HTMLElement;
+	colorOptions: string[];
+	defaultType: AnnotationType;
+	threadDisplay: ThreadDisplayMode;
+	onClose: () => void;
+	onExtract: () => void;
+	onRemove: () => void;
+	onSave: (draft: AnnotationDraft) => void;
 }
 
-declare module "react" {
-	interface HTMLAttributes<T> extends AriaAttributes, DOMAttributes<T> {
-		popover?: "auto" | "manual";
-	}
-}
-
-const Popover = ({
-	initialComment = "",
-	initialColor = "",
-	colorOptions,
-	onSave,
+export default function CommentPopover({
+	annotation,
 	className,
-	highlightText,
-	addNewFileFn,
-	popoverRef,
-}: CommentPopoverProps) => {
-	const [comment, setComment] = useState(initialComment);
-	const [showCommentForm, setShowCommentForm] = useState(comment !== "");
-	const inputRef = useRef<HTMLTextAreaElement>(null);
-	const closeButtonRef = useRef<HTMLButtonElement>(null);
-	const copyButtonRef = useRef<HTMLButtonElement>(null);
-	const commentButtonRef = useRef<HTMLButtonElement>(null);
-	const newFileButtonRef = useRef<HTMLButtonElement>(null);
+	colorOptions,
+	defaultType,
+	threadDisplay,
+	onClose,
+	onExtract,
+	onRemove,
+	onSave,
+}: CommentPopoverProps) {
+	const [body, setBody] = useState(annotation.body);
+	const [reply, setReply] = useState("");
+	const [selectedType, setSelectedType] = useState<AnnotationType | "">(
+		annotation.type ?? defaultType,
+	);
+	const [selectedColor, setSelectedColor] = useState(annotation.color ?? "");
+	const [error, setError] = useState("");
+	const threads = useMemo(() => parseThreads(body), [body]);
 
-	useEffect(() => {
-		if (closeButtonRef.current) setIcon(closeButtonRef.current, "x");
-	}, [showCommentForm]);
+	const save = () => {
+		const validationError = validateBody(body, reply);
 
-	useEffect(() => {
-		if (closeButtonRef.current) setIcon(closeButtonRef.current, "x");
-		if (copyButtonRef.current) setIcon(copyButtonRef.current, "clipboard");
-		if (newFileButtonRef.current)
-			setIcon(newFileButtonRef.current, "file-plus");
-		if (commentButtonRef.current)
-			setIcon(commentButtonRef.current, "square-pen");
-	}, []);
-
-	const hidePopover = () => {
-		popoverRef.hidePopover();
-	};
-
-	const handleSubmit = ({
-		selectedColor,
-		remove,
-	}: {
-		selectedColor?: string | null;
-		remove?: boolean;
-	}) => {
-		if (comment.includes("-->")) {
-			new Notice("Comment must not contain -->");
+		if (validationError) {
+			setError(validationError);
 			return;
 		}
-		if (comment.includes("\n\n")) {
-			new Notice("Comment must not contain empty lines");
-			return;
-		}
-		popoverRef.hidePopover();
-		const newComment =
-			comment.trim() + (selectedColor ? ` @${selectedColor}` : "");
+
+		const nextBody = buildBody(body, reply);
+
 		onSave({
-			comment: newComment,
-			remove,
+			id: annotation.id,
+			kind: annotation.kind,
+			type: selectedType || null,
+			body: nextBody,
+			color: selectedColor || null,
+			highlightText: annotation.highlightText,
 		});
+		onClose();
 	};
 
 	return (
-		<div
-			className={cn(
-				className,
-				"rounded-lg border border-solid border-gray-200 bg-white p-0 shadow-lg",
-			)}
-		>
-			<div
-				className="flex justify-between bg-gray-50"
-				style={{
-					borderBottom: "1px solid var(--background-modifier-border)",
-				}}
-			>
+		<div className={cn(className, "omnidian-comment-popover")}>
+			<div className="omnidian-comment-popover__header">
 				<button
 					type="button"
+					className="omnidian-comment-popover__danger"
 					onClick={() => {
-						handleSubmit({ remove: true });
+						onRemove();
+						onClose();
 					}}
-					className={cn(
-						"flex !bg-transparent px-2 py-1 text-xs !shadow-none hover:bg-transparent hover:underline",
-						showCommentForm ? "justify-around" : "justify-end",
-					)}
-					style={{ color: "var(--text-error)" }}
 				>
 					Remove
 				</button>
-
-				<div className="flex">
+				<div className="omnidian-comment-popover__actions">
 					<button
 						type="button"
-						onClick={() => {
-							popoverRef.hidePopover();
-							navigator.clipboard.writeText(highlightText);
-							new Notice("Copied to clipboard");
+						onClick={async () => {
+							try {
+								await navigator.clipboard.writeText(annotation.highlightText);
+								new Notice("Copied highlighted text.");
+							} catch (copyError) {
+								console.error(copyError);
+								new Notice("Could not copy highlighted text.");
+							}
 						}}
-						className="clickable-icon"
-						ref={copyButtonRef}
-						title="Copy to clipboard"
 					>
-						<span className="sr-only">Copy to clipboard</span>
+						Copy
 					</button>
-					<button
-						type="button"
-						onClick={() => {
-							popoverRef.hidePopover();
-							addNewFileFn();
-						}}
-						className="clickable-icon"
-						ref={newFileButtonRef}
-						title="Extract highlighted text to new file"
-					>
-						<span className="sr-only">
-							Extract highlighted text to new file
-						</span>
+					<button type="button" onClick={onExtract}>
+						Extract
 					</button>
-					{!showCommentForm && (
-						<button
-							type="button"
-							onClick={() => {
-								setShowCommentForm(!showCommentForm);
-								setTimeout(() => {
-									if (inputRef.current) {
-										inputRef.current.focus();
-										const length =
-											inputRef.current.value.length;
-										inputRef.current.setSelectionRange(
-											length,
-											length,
-										);
-									}
-								});
-							}}
-							className="clickable-icon"
-							ref={commentButtonRef}
-							title="Add comment"
-						>
-							<span className="sr-only">Add comment</span>
-						</button>
-					)}
+					<button type="button" onClick={onClose}>
+						Close
+					</button>
 				</div>
-				{showCommentForm && (
-					<button
-						type="button"
-						onClick={hidePopover}
-						className="clickable-icon"
-						ref={closeButtonRef}
-					>
-						<span className="sr-only">Close</span>
-					</button>
-				)}
 			</div>
-			<div className="p-2">
-				{showCommentForm && (
+
+			<div className="omnidian-comment-popover__body">
+				<div className="omnidian-comment-popover__row">
+					<label className="omnidian-comment-popover__field">
+						<span>Type</span>
+						<select
+							value={selectedType}
+							onChange={(event) =>
+								setSelectedType(event.target.value as AnnotationType | "")
+							}
+						>
+							<option value="">None</option>
+							{ANNOTATION_TYPES.map((type) => (
+								<option key={type} value={type}>
+									{type}
+								</option>
+							))}
+						</select>
+					</label>
+
+					<div className="omnidian-comment-popover__field">
+						<span>Color</span>
+						<div className="omnidian-comment-popover__colors">
+							<ColorButton
+								color=""
+								selected={selectedColor === ""}
+								onClick={() => setSelectedColor("")}
+								label="Default"
+							/>
+							{colorOptions.map((color) => (
+								<ColorButton
+									key={color}
+									color={color}
+									selected={selectedColor === color}
+									onClick={() => setSelectedColor(color)}
+									label={color}
+								/>
+							))}
+						</div>
+					</div>
+				</div>
+
+				<label className="omnidian-comment-popover__field omnidian-comment-popover__field--stacked">
+					<span>Comment</span>
 					<textarea
-						ref={inputRef}
-						value={comment}
-						onChange={(e) => setComment(e.target.value)}
-						className="mb-2 w-full resize-none rounded-none border-none p-0 !shadow-none"
-						rows={5}
-						placeholder="Add your comment..."
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault();
-								handleSubmit({ selectedColor: initialColor });
+						className="omnidian-comment-popover__textarea"
+						rows={threads.length ? 6 : 5}
+						value={body}
+						onChange={(event) => {
+							setBody(event.target.value);
+							setError("");
+						}}
+						onKeyDown={(event) => {
+							if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+								event.preventDefault();
+								save();
 							}
 						}}
 					/>
-				)}
-				<div className="flex items-center gap-x-2">
-					<div className="flex flex-1 items-center gap-x-2">
-						<ColorButton
-							color={null}
-							onClickHandler={() => {
-								handleSubmit({ selectedColor: null });
-							}}
-						/>
-						{colorOptions.map((color) => (
-							<ColorButton
-								key={color}
-								color={color}
-								onClickHandler={(color) => {
-									handleSubmit({ selectedColor: color });
-								}}
-							/>
+				</label>
+
+				{threadDisplay === "inline" && threads.length > 0 && (
+					<div className="omnidian-comment-thread">
+						<span className="omnidian-comment-thread__label">Thread</span>
+						{threads.map((thread, index) => (
+							<div
+								key={`${thread.speaker}-${index}`}
+								className={cn("omnidian-comment-turn", {
+									"omnidian-comment-turn-ai": thread.speaker === "ai",
+									"omnidian-comment-turn-user": thread.speaker === "user",
+								})}
+							>
+								<strong>[{thread.speaker}]</strong> {thread.message}
+							</div>
 						))}
 					</div>
+				)}
+
+				{threads.length > 0 && (
+					<label className="omnidian-comment-popover__field omnidian-comment-popover__field--stacked">
+						<span>Add reply</span>
+						<textarea
+							className="omnidian-comment-popover__textarea omnidian-comment-popover__textarea--compact"
+							rows={2}
+							value={reply}
+							onChange={(event) => {
+								setReply(event.target.value);
+								setError("");
+							}}
+							placeholder="Adds a [user] reply on save"
+						/>
+					</label>
+				)}
+
+				<div className="omnidian-comment-popover__meta">
+					<span>ID: {annotation.id ?? "legacy"}</span>
+					<span>
+						{annotation.kind === "block" ? "Block annotation" : "Inline annotation"}
+					</span>
+				</div>
+
+				{error && <div className="omnidian-comment-popover__error">{error}</div>}
+
+				<div className="omnidian-comment-popover__footer">
+					<button type="button" className="mod-cta" onClick={save}>
+						Save
+					</button>
 				</div>
 			</div>
 		</div>
 	);
-};
+}
 
-const ColorButton = ({
+function ColorButton({
 	color,
-	onClickHandler,
+	label,
+	onClick,
+	selected,
 }: {
-	color: string | null;
-	onClickHandler: (color: string | null) => void;
-}) => (
-	<div
-		onClick={() => onClickHandler(color)}
-		style={{
-			backgroundColor: color || "var(--text-highlight-bg)",
-		}}
-		className="button size-6 rounded-full"
-	>
-		<span className="sr-only">{color || "none"}</span>
-	</div>
-);
+	color: string;
+	label: string;
+	onClick: () => void;
+	selected: boolean;
+}) {
+	return (
+		<button
+			type="button"
+			title={label}
+			aria-label={label}
+			className={cn("omnidian-comment-popover__color", {
+				"is-selected": selected,
+			})}
+			style={{
+				backgroundColor: color || "var(--text-highlight-bg)",
+			}}
+			onClick={onClick}
+		/>
+	);
+}
 
-Popover.displayName = "Popover";
+function buildBody(body: string, reply: string) {
+	const trimmedBody = body.trim();
+	const trimmedReply = reply.trim();
 
-export default Popover;
+	if (!trimmedReply) {
+		return trimmedBody;
+	}
+
+	return [trimmedBody, `[user] ${trimmedReply}`].filter(Boolean).join("\n");
+}
+
+function validateBody(body: string, reply: string) {
+	const nextBody = buildBody(body, reply);
+
+	if (nextBody.includes("-->")) {
+		return "Comment body must not contain -->";
+	}
+
+	if (nextBody.includes("%%ann-")) {
+		return "Comment body must not contain %%ann-";
+	}
+
+	return "";
+}

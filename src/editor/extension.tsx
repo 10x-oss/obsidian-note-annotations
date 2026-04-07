@@ -1,23 +1,32 @@
 import {
-	EditorState,
-	StateField,
-	type Extension,
-	Text,
-	StateEffect,
-	type Range,
-} from "@codemirror/state";
-import {
-	EditorView,
 	Decoration,
+	EditorView,
 	type DecorationSet,
-	WidgetType,
 	ViewPlugin,
 	ViewUpdate,
+	WidgetType,
 } from "@codemirror/view";
+import {
+	EditorState,
+	type Extension,
+	type Range,
+	StateEffect,
+	StateField,
+} from "@codemirror/state";
 import { createRoot } from "react-dom/client";
-import CommentPopover from "./popover";
 import { editorLivePreviewField } from "obsidian";
-import { matchColor } from "@/lib/utils";
+import type OmnidianPlugin from "@/main";
+import {
+	extractAnnotations,
+	getAnnotationTooltip,
+	getEffectiveAnnotationType,
+} from "@/lib/parser";
+import {
+	normalizeAnnotationDraft,
+	serializeAnnotation,
+} from "@/lib/serializer";
+import type { Annotation, AnnotationDraft } from "@/types";
+import CommentPopover from "./popover";
 
 const popoverContainerEl = document.createElement("div");
 popoverContainerEl.setAttribute("popover", "auto");
@@ -27,392 +36,339 @@ const root = createRoot(popoverContainerEl);
 
 const ShowPopoverEffect = StateEffect.define<{ from: number; to: number }>();
 
-interface HighlightMatch {
-	from: number;
-	to: number;
-	highlightText: string;
-	comment?: string;
-	fullMatch: string;
-	hasComment: boolean;
-	hasColor: boolean;
-}
+abstract class AnnotationWidget extends WidgetType {
+	protected anchorEl: HTMLElement | null = null;
 
-class HighlightWidget extends WidgetType {
-	view: EditorView | null = null;
 	constructor(
-		private highlightText: string,
-		private comment: string | undefined,
-		private from: number,
-		private to: number,
-		private hasComment: boolean,
-		private hasColor: boolean,
-		private colorOptions: string[],
-		private addNewFileFn: [
-			string | undefined,
-			(path: string, data: string) => Promise<void>
-		],
-		private wrapperEl?: HTMLElement
+		protected annotation: Annotation,
+		protected plugin: OmnidianPlugin,
 	) {
 		super();
 	}
 
-	eq(other: HighlightWidget) {
-		return (
-			this.highlightText === other.highlightText &&
-			this.comment === other.comment &&
-			this.from === other.from &&
-			this.to === other.to &&
-			this.hasComment === other.hasComment &&
-			this.hasColor === other.hasColor
-		);
+	eq(other: AnnotationWidget) {
+		return serializeAnnotation(this.annotation) === serializeAnnotation(other.annotation);
 	}
 
-	toDOM(view: EditorView) {
-		this.view = view;
-		const wrapper = document.createElement("span");
-		this.wrapperEl = wrapper;
-		this.wrapperEl.className = this.hasComment
-			? "omnidian-highlight has-comment"
-			: "omnidian-highlight";
-		if (this.hasColor) this.wrapperEl.classList.add("has-color");
-		this.wrapperEl.textContent = this.highlightText;
-
-		if (this.comment) {
-			this.wrapperEl.title = this.comment;
-			this.setHighlightColor(this.comment);
+	showPopover(view: EditorView) {
+		if (!this.anchorEl) {
+			return;
 		}
-
-		this.wrapperEl.addEventListener("click", () => {
-			popoverContainerEl.togglePopover(true);
-			this.renderPopoverContent();
-			this.positionPopover();
-			setTimeout(() => {
-				const textarea = getPopover()?.find(
-					"textarea"
-				) as HTMLTextAreaElement;
-				if (textarea) {
-					textarea.focus();
-					const length = textarea.value.length;
-					textarea.setSelectionRange(length, length);
-				}
-			});
-
-			getPopover()?.find("textarea")?.focus();
-		});
-
-		return this.wrapperEl;
-	}
-
-	private renderPopoverContent() {
-		const popover = getPopover();
-		if (!popover) return;
-
-		let initialComment = this.comment || "";
-		const initialColor = matchColor(initialComment);
-		initialComment = initialComment
-			.replace(` @${initialColor}`, "")
-			.replace(`@${initialColor}`, "");
 
 		root.render(
 			<CommentPopover
+				annotation={this.annotation}
 				className="omnidian-comment-popover"
-				initialComment={initialComment}
-				key={Math.random()} // force re-render
-				colorOptions={this.colorOptions}
-				highlightText={this.highlightText}
-				addNewFileFn={() => {
-					const [currentFile, saveFile] = this.addNewFileFn;
-					let fileContent = currentFile
-						? `[[${currentFile}]]\n\n`
-						: "";
-					fileContent += `> ${this.highlightText}\n\n${this.highlightText}`;
-					const fileName = `${this.highlightText}.md`;
-					saveFile(fileName, fileContent);
+				colorOptions={this.plugin.settings.colors}
+				defaultType={this.plugin.settings.defaultAnnotationType}
+				threadDisplay={this.plugin.settings.threadDisplay}
+				onClose={hidePopover}
+				onExtract={() => {
+					void this.plugin.extractAnnotationToFile(this.annotation);
+					hidePopover();
 				}}
-				onSave={({ comment, remove }) => {
-					if (remove) {
-						this.handleCommentRemoval();
-					} else if (typeof comment !== "undefined") {
-						this.handleCommentUpdate(comment);
-					}
-				}}
-				popoverRef={popover}
-			/>
+				onRemove={() => this.removeAnnotation(view)}
+				onSave={(draft) => this.saveAnnotation(view, draft)}
+			/>,
+		);
+
+		positionPopover(this.anchorEl);
+		popoverContainerEl.showPopover();
+	}
+
+	protected applySharedAttributes(element: HTMLElement) {
+		const effectiveType = getEffectiveAnnotationType(this.annotation);
+
+		element.setAttribute(
+			"title",
+			getAnnotationTooltip(this.annotation) || this.annotation.highlightText,
+		);
+
+		if (this.annotation.id) {
+			element.dataset["annotationId"] = this.annotation.id;
+		}
+
+		if (effectiveType) {
+			element.dataset["annotationType"] = effectiveType;
+			element.classList.add(`type-${effectiveType}`);
+		}
+
+		if (this.annotation.body.trim()) {
+			element.classList.add("has-comment");
+		}
+
+		if (this.annotation.color) {
+			element.classList.add("has-color");
+			element.style.backgroundColor = this.annotation.color;
+		}
+	}
+
+	protected removeAnnotation(view: EditorView) {
+		view.dispatch(
+			view.state.update({
+				changes: {
+					from: this.annotation.from,
+					to: this.annotation.to,
+					insert: this.annotation.highlightText,
+				},
+			}),
 		);
 	}
 
-	private positionPopover() {
-		const popover = getPopover();
-		if (!popover || !this.wrapperEl) return;
-
-		const rect = this.wrapperEl.getBoundingClientRect();
-		const popoverRect = popover.getBoundingClientRect();
-
-		const wrapperWidth = rect.width;
-		const popoverWidth = popoverRect.width;
-		const centerOffset = (wrapperWidth - popoverWidth) / 2;
-
-		popover.style.top = `${rect.bottom + window.scrollY + 10}px`;
-		popover.style.left = `${rect.left + window.scrollX + centerOffset}px`;
-
-		// Adjust position if it goes off-screen
-		const rightEdge = rect.left + popoverRect.width;
-		if (rightEdge > window.innerWidth) {
-			popover.style.left = `${window.innerWidth - popoverRect.width}px`;
-		}
-	}
-
-	public showPopover() {
-		this.positionPopover();
-		this.renderPopoverContent();
-		getPopover()?.showPopover();
-	}
-
-	private handleCommentRemoval() {
-		if (!this.view) return;
-		const transaction = this.view.state.update({
-			changes: {
-				from: this.from,
-				to: this.to,
-				insert: this.highlightText,
-			},
+	protected saveAnnotation(view: EditorView, draft: AnnotationDraft) {
+		const nextAnnotation = normalizeAnnotationDraft({
+			...this.annotation,
+			...draft,
 		});
-		this.view.dispatch(transaction);
-	}
 
-	private handleCommentUpdate(newComment: string) {
-		if (!this.view) return;
+		const insert = serializeAnnotation(nextAnnotation);
 
-		let newText: string;
-		if (newComment.trim() === "") {
-			newText = `==${this.highlightText}==`;
-		} else {
-			newText = `==${this.highlightText}==<!--${newComment}-->`;
-		}
-
-		this.setHighlightColor(newComment);
-
-		const transaction = this.view.state.update({
-			changes: {
-				from: this.from,
-				to: this.to,
-				insert: newText,
-			},
-		});
-		this.view.dispatch(transaction);
-	}
-
-	private setHighlightColor(comment: string) {
-		const matchedColor = matchColor(comment);
-
-		if (this.wrapperEl) {
-			this.wrapperEl.style.backgroundColor =
-				matchedColor || "var(--text-highlight-bg)";
-		}
+		view.dispatch(
+			view.state.update({
+				changes: {
+					from: this.annotation.from,
+					to: this.annotation.to,
+					insert,
+				},
+			}),
+		);
 	}
 }
 
-function findHighlightsAndComments(doc: Text): HighlightMatch[] {
-	const matches: HighlightMatch[] = [];
-	const docText = doc.toString();
+class InlineAnnotationWidget extends AnnotationWidget {
+	toDOM(view: EditorView) {
+		const wrapper = document.createElement("span");
+		this.anchorEl = wrapper;
+		wrapper.className = "omnidian-highlight";
+		wrapper.textContent = this.annotation.highlightText;
+		this.applySharedAttributes(wrapper);
+		wrapper.addEventListener("click", () => this.showPopover(view));
 
-	const annotatedRegex = /==([^=]+)==<!--([\s\S]*?)-->/gm;
-	const highlightRegex = /==(?!<!--)([^=]+)==(?!<!--)/gm;
-
-	// Find annotated highlights
-	let match;
-	while ((match = annotatedRegex.exec(docText)) !== null) {
-		const comment = match[2];
-		const matchedColor = matchColor(comment);
-		const hasComment = comment.trim() !== `@${matchedColor}`;
-
-		matches.push({
-			from: match.index,
-			to: match.index + match[0].length,
-			highlightText: match[1],
-			fullMatch: match[0],
-			hasColor: matchedColor !== null,
-			hasComment,
-			comment,
-		});
+		return wrapper;
 	}
-
-	// Find standalone highlights
-	while ((match = highlightRegex.exec(docText)) !== null) {
-		matches.push({
-			from: match.index,
-			to: match.index + match[0].length,
-			highlightText: match[1],
-			fullMatch: match[0],
-			hasComment: false,
-			hasColor: false,
-		});
-	}
-
-	return matches;
 }
 
-function createHighlightDecorations(
-	state: EditorState,
-	colorOptions: string[],
-	addNewFileFn: [
-		string | undefined,
-		(path: string, data: string) => Promise<void>
-	]
-): DecorationSet {
-	const decorations: Range<Decoration>[] = [];
-	const matches = findHighlightsAndComments(state.doc);
+class BlockAnnotationWidget extends AnnotationWidget {
+	toDOM(view: EditorView) {
+		const wrapper = document.createElement("div");
+		const header = wrapper.createDiv({
+			cls: "omnidian-block-annotation__header",
+		});
+		const highlight = wrapper.createDiv({
+			cls: "omnidian-block-annotation__highlight",
+			text: this.annotation.highlightText,
+		});
+		const body = wrapper.createDiv({
+			cls: "omnidian-block-annotation__body",
+		});
 
-	for (const match of matches) {
-		const deco = Decoration.replace({
-			widget: new HighlightWidget(
-				match.highlightText,
-				match.comment,
-				match.from,
-				match.to,
-				match.hasComment,
-				match.hasColor,
-				colorOptions,
-				addNewFileFn
-			),
-		}).range(match.from, match.to);
+		this.anchorEl = wrapper;
+		wrapper.className = "omnidian-block-annotation";
+		this.applySharedAttributes(wrapper);
 
-		decorations.push(deco);
+		header.setText(
+			[
+				getEffectiveAnnotationType(this.annotation) ?? "annotation",
+				this.annotation.id ?? "legacy",
+			].join(" • "),
+		);
+		body.setText(this.annotation.body || "No comment yet.");
+
+		for (const element of [wrapper, header, highlight, body]) {
+			element.addEventListener("click", () => this.showPopover(view));
+		}
+
+		return wrapper;
 	}
-
-	return Decoration.set(decorations, true);
 }
 
-export function highlightExtension(
-	colorOptions: string[],
-	addNewFileFn: [
-		string | undefined,
-		(path: string, data: string) => Promise<void>
-	]
-): Extension {
+export function highlightExtension(plugin: OmnidianPlugin): Extension {
 	const highlightField = StateField.define<DecorationSet>({
 		create(state) {
-			// Check mode on initial creation
 			if (!state.field(editorLivePreviewField)) {
 				return Decoration.none;
 			}
-			return createHighlightDecorations(
-				state,
-				colorOptions,
-				addNewFileFn
-			);
+
+			return createAnnotationDecorations(state, plugin);
 		},
 		update(decorations, transaction) {
-			// Handle mode changes
-			const isLivePreview = transaction.state.field(
-				editorLivePreviewField
-			);
-			const wasLivePreview = transaction.startState.field(
-				editorLivePreviewField
-			);
+			const isLivePreview = transaction.state.field(editorLivePreviewField);
+			const wasLivePreview = transaction.startState.field(editorLivePreviewField);
 
-			// If mode changed or we're in source mode
 			if (!isLivePreview || isLivePreview !== wasLivePreview) {
 				if (!isLivePreview) {
 					return Decoration.none;
-				} else {
-					// Switching to live preview - recreate decorations
-					return createHighlightDecorations(
-						transaction.state,
-						colorOptions,
-						addNewFileFn
-					);
 				}
+
+				return createAnnotationDecorations(transaction.state, plugin);
 			}
 
-			// Normal update in live preview mode
 			if (transaction.docChanged) {
-				return createHighlightDecorations(
-					transaction.state,
-					colorOptions,
-					addNewFileFn
-				);
+				return createAnnotationDecorations(transaction.state, plugin);
 			}
+
 			return decorations.map(transaction.changes);
 		},
-		provide: (f) => EditorView.decorations.from(f),
+		provide: (field) => EditorView.decorations.from(field),
 	});
 
-	// Add ViewPlugin to trigger popover when new highlight is created
 	const highlightPlugin = ViewPlugin.fromClass(
 		class {
 			update(update: ViewUpdate) {
-				for (const effect of update.transactions[0]?.effects || []) {
-					if (!effect.is(ShowPopoverEffect)) {
-						return;
-					}
-					const decorations = update.state.field(highlightField);
-					decorations.between(
-						effect.value.from,
-						effect.value.to,
-						(_, __, deco) => {
-							if (
-								deco.spec.widget instanceof HighlightWidget ===
-								false
-							) {
+				for (const transaction of update.transactions) {
+					for (const effect of transaction.effects) {
+						if (!effect.is(ShowPopoverEffect)) {
+							continue;
+						}
+
+						const decorations = update.state.field(highlightField);
+						decorations.between(effect.value.from, effect.value.to, (_, __, decoration) => {
+							const widget = decoration.spec.widget as AnnotationWidget | undefined;
+
+							if (!widget) {
 								return;
 							}
-							setTimeout(
-								() => deco.spec.widget.showPopover(update.view),
-								0
-							);
-						}
-					);
+
+							setTimeout(() => widget.showPopover(update.view), 0);
+						});
+					}
 				}
 			}
-		}
+		},
 	);
 
 	return [highlightField, highlightPlugin];
 }
 
-// Helper function to create a new highlight
-export function createHighlight(view: EditorView) {
+export function createInlineHighlight(
+	view: EditorView,
+	{ id }: { id: string | null },
+) {
 	const selection = view.state.selection.main;
-	if (selection.empty) return false;
 
-	const selectedText = view.state.doc.sliceString(
-		selection.from,
-		selection.to
-	);
-	const highlightText = `==${selectedText}==`;
+	if (selection.empty) {
+		return false;
+	}
 
-	const transaction = view.state.update({
-		changes: {
-			from: selection.from,
-			to: selection.to,
-			insert: highlightText,
-		},
-		effects: [
-			ShowPopoverEffect.of({
+	const selectedText = view.state.doc.sliceString(selection.from, selection.to);
+	const annotation: AnnotationDraft = {
+		id,
+		kind: "inline",
+		type: null,
+		body: "",
+		color: null,
+		highlightText: selectedText,
+	};
+	const insert = serializeAnnotation(annotation);
+
+	view.dispatch(
+		view.state.update({
+			changes: {
 				from: selection.from,
-				to: selection.from + highlightText.length,
-			}),
-		],
-	});
+				to: selection.to,
+				insert,
+			},
+			effects: [
+				ShowPopoverEffect.of({
+					from: selection.from,
+					to: selection.from + insert.length,
+				}),
+			],
+		}),
+	);
 
-	view.dispatch(transaction);
 	return true;
 }
 
-export function showPopover(view: EditorView, from: number, to: number) {
-	view.dispatch({
-		effects: [ShowPopoverEffect.of({ from, to })],
-	});
+export function createBlockAnnotation(
+	view: EditorView,
+	{ id }: { id: string | null },
+) {
+	const selection = view.state.selection.main;
+
+	if (selection.empty) {
+		return false;
+	}
+
+	const selectedText = view.state.doc.sliceString(selection.from, selection.to);
+	const annotation: AnnotationDraft = {
+		id,
+		kind: "block",
+		type: null,
+		body: "",
+		color: null,
+		highlightText: selectedText,
+	};
+	const insert = serializeAnnotation(annotation);
+
+	view.dispatch(
+		view.state.update({
+			changes: {
+				from: selection.from,
+				to: selection.to,
+				insert,
+			},
+			effects: [
+				ShowPopoverEffect.of({
+					from: selection.from,
+					to: selection.from + insert.length,
+				}),
+			],
+		}),
+	);
+
+	return true;
 }
 
 export function cleanup() {
 	root.unmount();
 	popoverContainerEl.remove();
 }
-export function getPopover() {
-	return document.getElementById(`omnidian-comment-popover-container`);
+
+function createAnnotationDecorations(state: EditorState, plugin: OmnidianPlugin) {
+	const annotations = extractAnnotations(state.doc.toString());
+	const decorations: Range<Decoration>[] = [];
+
+	for (const annotation of annotations) {
+		const widget =
+			annotation.kind === "block"
+				? new BlockAnnotationWidget(annotation, plugin)
+				: new InlineAnnotationWidget(annotation, plugin);
+
+		decorations.push(
+			Decoration.replace({
+				block: annotation.kind === "block",
+				widget,
+			}).range(annotation.from, annotation.to),
+		);
+	}
+
+	return Decoration.set(decorations, true);
 }
-export function hidePopover() {
+
+function positionPopover(anchorEl: HTMLElement) {
+	const popover = getPopover();
+
+	if (!popover) {
+		return;
+	}
+
+	const rect = anchorEl.getBoundingClientRect();
+	const popoverRect = popover.getBoundingClientRect();
+	const centerOffset = (rect.width - popoverRect.width) / 2;
+
+	popover.style.top = `${rect.bottom + window.scrollY + 10}px`;
+	popover.style.left = `${Math.max(16, rect.left + window.scrollX + centerOffset)}px`;
+
+	if (rect.left + popoverRect.width > window.innerWidth - 16) {
+		popover.style.left = `${window.innerWidth - popoverRect.width - 16}px`;
+	}
+}
+
+function getPopover() {
+	return document.getElementById("omnidian-comment-popover-container");
+}
+
+function hidePopover() {
 	getPopover()?.hidePopover();
 }

@@ -1,32 +1,23 @@
-import { cn } from "@/lib/utils";
+import { useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { useState, useEffect } from "react";
 import { MarkdownRenderChild } from "obsidian";
+import { cn } from "@/lib/utils";
+import { getEffectiveAnnotationType } from "@/lib/parser";
+import type { Annotation } from "@/types";
 
 export default class CommentRenderer extends MarkdownRenderChild {
-	/** @public */
 	containerEl: HTMLElement;
-
 	private rootEl: HTMLElement;
 	private root: Root;
 
-	/**
-	 * @param containerEl - This HTMLElement will be used to test whether this component is still alive.
-	 * It should be a child of the Markdown preview sections, and when it's no longer attached
-	 * (for example, when it is replaced with a new version because the user edited the Markdown source code),
-	 * this component will be unloaded.
-	 * @public
-	 */
 	constructor(
 		containerEl: HTMLElement,
-		private comment: string,
-		private position: string,
+		private annotation: Annotation,
+		private position: "left" | "right",
 		private mark: HTMLElement,
-		private color: string | null
 	) {
 		super(containerEl);
 		this.containerEl = containerEl;
-
 		this.rootEl = containerEl.createEl("div");
 		this.root = createRoot(this.rootEl);
 	}
@@ -34,11 +25,10 @@ export default class CommentRenderer extends MarkdownRenderChild {
 	onload() {
 		this.root.render(
 			<Comment
-				mark={this.mark}
+				annotation={this.annotation}
 				position={this.position}
-				comment={this.comment}
-				color={this.color}
-			/>
+				mark={this.mark}
+			/>,
 		);
 	}
 
@@ -48,17 +38,16 @@ export default class CommentRenderer extends MarkdownRenderChild {
 }
 
 function Comment({
-	mark,
+	annotation,
 	position,
-	comment,
-	color,
+	mark,
 }: {
+	annotation: Annotation;
+	position: "left" | "right";
 	mark: HTMLElement;
-	position: string;
-	comment: string;
-	color: string | null;
 }) {
 	const [hover, setHover] = useState(false);
+	const effectiveType = getEffectiveAnnotationType(annotation);
 
 	useEffect(() => {
 		const handleMouseEnter = () => setHover(true);
@@ -72,30 +61,41 @@ function Comment({
 			mark.removeEventListener("mouseleave", handleMouseLeave);
 		};
 	}, [mark]);
+
 	return (
 		<div
-			onMouseEnter={() => {
-				mark.classList.add("hover");
-			}}
-			onMouseLeave={() => {
-				mark.classList.remove("hover");
-			}}
-			className={cn("omnidian-comment absolute top-0 cursor-help p-2", {
-				"right-full mr-8": position == "left",
-				"left-full ml-8": position == "right",
+			onMouseEnter={() => mark.classList.add("hover")}
+			onMouseLeave={() => mark.classList.remove("hover")}
+			className={cn("omnidian-comment", {
+				"right-full mr-8": position === "left",
+				"left-full ml-8": position === "right",
 			})}
 			style={{
-				fontSize: "var(--footnote-size)",
-				color: "var(--text-muted)",
-				width: "calc(var(--file-line-width)/4)",
 				backgroundColor: hover
-					? color
-						? color
-						: "var(--text-highlight-bg)"
+					? annotation.color || "var(--text-highlight-bg)"
 					: "transparent",
 			}}
 		>
-			<span>{comment}</span>
+			{effectiveType && (
+				<div className="omnidian-comment__type">{effectiveType}</div>
+			)}
+			{annotation.threads.length ? (
+				<div className="omnidian-comment-thread">
+					{annotation.threads.map((thread, index) => (
+						<div
+							key={`${thread.speaker}-${index}`}
+							className={cn("omnidian-comment-turn", {
+								"omnidian-comment-turn-ai": thread.speaker === "ai",
+								"omnidian-comment-turn-user": thread.speaker === "user",
+							})}
+						>
+							<strong>[{thread.speaker}]</strong> {thread.message}
+						</div>
+					))}
+				</div>
+			) : (
+				<span>{annotation.body}</span>
+			)}
 		</div>
 	);
 }
