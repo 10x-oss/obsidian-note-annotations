@@ -1,6 +1,5 @@
 import {
 	ItemView,
-	Setting,
 	type HeadingCache,
 	type TFile,
 	type WorkspaceLeaf,
@@ -14,6 +13,12 @@ export const ANNOTATIONS_OUTLINE_VIEW_TYPE = "omnidian-annotations-outline";
 interface OutlineSection {
 	heading: HeadingCache | null;
 	annotations: Annotation[];
+}
+
+interface OutlineTreeNode {
+	heading: HeadingCache | null;
+	annotations: Annotation[];
+	children: OutlineTreeNode[];
 }
 
 export class AnnotationsOutlineView extends ItemView {
@@ -60,10 +65,7 @@ export class AnnotationsOutlineView extends ItemView {
 
 		const contents = await this.plugin.app.vault.read(file);
 		const annotations = this.plugin.getFileAnnotations(contents);
-		const headingSections = buildOutlineSections(
-			this.plugin.app.metadataCache.getFileCache(file)?.headings ?? [],
-			annotations,
-		);
+		const headings = this.plugin.app.metadataCache.getFileCache(file)?.headings ?? [];
 
 		renderHeader(
 			contentEl,
@@ -83,21 +85,31 @@ export class AnnotationsOutlineView extends ItemView {
 			return;
 		}
 
+		if (this.plugin.settings.outlineDisplay === "mixed") {
+			const tree = buildOutlineTree(headings, annotations);
+			renderTree(
+				contentEl,
+				file,
+				contents,
+				this.plugin,
+				tree,
+			);
+			return;
+		}
+
+		const headingSections = buildOutlineSections(headings, annotations);
+
 		for (const section of headingSections) {
-			if (
-				this.plugin.settings.outlineDisplay === "annotations" &&
-				!section.annotations.length
-			) {
+			if (!section.annotations.length) {
 				continue;
 			}
 
-			renderSection(
+			renderFlatSection(
 				contentEl,
 				section,
 				file,
 				contents,
 				this.plugin,
-				this.plugin.settings.outlineDisplay,
 			);
 		}
 	}
@@ -126,13 +138,12 @@ function renderHeader(
 	});
 }
 
-function renderSection(
+function renderFlatSection(
 	root: HTMLElement,
 	section: OutlineSection,
 	file: TFile,
 	contents: string,
 	plugin: OmnidianPlugin,
-	displayMode: "annotations" | "mixed",
 ) {
 	const sectionEl = root.createDiv({ cls: "omnidian-outline-section" });
 	const headingLabel = section.heading
@@ -140,28 +151,18 @@ function renderSection(
 		: "Top of note";
 
 	const headingRow = sectionEl.createDiv({
-		cls: "omnidian-outline-section__row",
+		cls: "omnidian-outline-section__heading-setting omnidian-outline-clickable",
 	});
-	const headingInfo = new Setting(headingRow)
-		.setName(
-			displayMode === "mixed"
-				? headingLabel
-				: `${headingLabel} (${section.annotations.length})`,
-		)
-		.setDesc(
-			displayMode === "mixed"
-				? `${section.annotations.length} annotation${
-						section.annotations.length === 1 ? "" : "s"
-				  }`
-				: "",
-		);
-
-	headingInfo.settingEl.addClass("omnidian-outline-section__heading-setting");
-	headingInfo.infoEl.addClass("omnidian-outline-section__heading-info");
-	headingInfo.settingEl.addClass("omnidian-outline-clickable");
+	const headingInfo = headingRow.createDiv({
+		cls: "omnidian-outline-section__heading-info",
+	});
+	headingInfo.createDiv({
+		cls: "omnidian-outline-heading__title",
+		text: `${headingLabel} (${section.annotations.length})`,
+	});
 
 	if (section.heading) {
-		makeClickable(headingInfo.settingEl, async () => {
+		makeClickable(headingRow, async () => {
 			await plugin.jumpToOffset(
 				file,
 				contents,
@@ -175,23 +176,136 @@ function renderSection(
 	});
 
 	for (const annotation of section.annotations) {
-		const setting = new Setting(annotationsRoot)
-			.setName(annotation.highlightText.replace(/\s+/g, " ").slice(0, 90))
-			.setDesc(buildAnnotationDescription(annotation));
+		renderAnnotationRow(
+			annotationsRoot,
+			annotation,
+			file,
+			contents,
+			plugin,
+		);
+	}
+}
 
-		setting.settingEl.addClass("omnidian-outline-item");
-		setting.infoEl.addClass("omnidian-outline-item__info");
-		setting.settingEl.addClass("omnidian-outline-clickable");
+function renderTree(
+	root: HTMLElement,
+	file: TFile,
+	contents: string,
+	plugin: OmnidianPlugin,
+	tree: OutlineTreeNode,
+) {
+	if (tree.annotations.length) {
+		const topSection = root.createDiv({ cls: "omnidian-outline-section" });
+		const topHeading = topSection.createDiv({
+			cls: "omnidian-outline-section__heading-setting",
+		});
+		const info = topHeading.createDiv({
+			cls: "omnidian-outline-section__heading-info",
+		});
+		info.createDiv({
+			cls: "omnidian-outline-heading__title",
+			text: `Top of note (${tree.annotations.length})`,
+		});
 
-		if (annotation.color) {
-			setting.settingEl.style.borderLeftColor = annotation.color;
-			setting.settingEl.style.background = `color-mix(in srgb, ${annotation.color} 10%, transparent)`;
+		const annotationsRoot = topSection.createDiv({
+			cls: "omnidian-outline-tree__children",
+		});
+
+		for (const annotation of tree.annotations) {
+			renderAnnotationRow(
+				annotationsRoot,
+				annotation,
+				file,
+				contents,
+				plugin,
+			);
 		}
+	}
 
-		makeClickable(setting.settingEl, async () => {
-			await plugin.jumpToAnnotation(file, contents, annotation);
+	for (const child of tree.children) {
+		renderTreeNode(root, child, file, contents, plugin);
+	}
+}
+
+function renderTreeNode(
+	root: HTMLElement,
+	node: OutlineTreeNode,
+	file: TFile,
+	contents: string,
+	plugin: OmnidianPlugin,
+) {
+	const nodeEl = root.createDiv({ cls: "omnidian-outline-tree__node" });
+	const headingRow = nodeEl.createDiv({
+		cls: "omnidian-outline-section__heading-setting omnidian-outline-clickable omnidian-outline-tree__heading",
+	});
+	const headingInfo = headingRow.createDiv({
+		cls: "omnidian-outline-section__heading-info",
+	});
+	const annotationCount = countAnnotations(node);
+	const headingLabel = node.heading
+		? `${"#".repeat(node.heading.level)} ${node.heading.heading}`
+		: "Top of note";
+
+	headingInfo.createDiv({
+		cls: "omnidian-outline-heading__title",
+		text: headingLabel,
+	});
+	headingInfo.createDiv({
+		cls: "omnidian-outline-heading__meta",
+		text: `${annotationCount} annotation${annotationCount === 1 ? "" : "s"}`,
+	});
+
+	if (node.heading) {
+		makeClickable(headingRow, async () => {
+			await plugin.jumpToOffset(
+				file,
+				contents,
+				node.heading?.position.start.offset ?? 0,
+			);
 		});
 	}
+
+	const childrenEl = nodeEl.createDiv({
+		cls: "omnidian-outline-tree__children",
+	});
+
+	for (const annotation of node.annotations) {
+		renderAnnotationRow(childrenEl, annotation, file, contents, plugin);
+	}
+
+	for (const child of node.children) {
+		renderTreeNode(childrenEl, child, file, contents, plugin);
+	}
+}
+
+function renderAnnotationRow(
+	root: HTMLElement,
+	annotation: Annotation,
+	file: TFile,
+	contents: string,
+	plugin: OmnidianPlugin,
+) {
+	const row = root.createDiv({
+		cls: "omnidian-outline-item omnidian-outline-clickable",
+	});
+	const info = row.createDiv({ cls: "omnidian-outline-item__info" });
+
+	info.createDiv({
+		cls: "omnidian-outline-item__title",
+		text: annotation.highlightText.replace(/\s+/g, " ").slice(0, 90),
+	});
+	info.createDiv({
+		cls: "omnidian-outline-item__description",
+		text: buildAnnotationDescription(annotation),
+	});
+
+	if (annotation.color) {
+		row.style.borderLeftColor = annotation.color;
+		row.style.background = `color-mix(in srgb, ${annotation.color} 10%, transparent)`;
+	}
+
+	makeClickable(row, async () => {
+		await plugin.jumpToAnnotation(file, contents, annotation);
+	});
 }
 
 function buildOutlineSections(
@@ -231,6 +345,57 @@ function buildOutlineSections(
 	return sections;
 }
 
+function buildOutlineTree(
+	headings: HeadingCache[],
+	annotations: Annotation[],
+) {
+	const root: OutlineTreeNode = {
+		heading: null,
+		annotations: [],
+		children: [],
+	};
+	const sortedHeadings = [...headings].sort(
+		(left, right) => left.position.start.offset - right.position.start.offset,
+	);
+	const stack: OutlineTreeNode[] = [root];
+	const flatNodes: OutlineTreeNode[] = [];
+
+	for (const heading of sortedHeadings) {
+		while (
+			stack.length > 1 &&
+			(stack.at(-1)?.heading?.level ?? 0) >= heading.level
+		) {
+			stack.pop();
+		}
+
+		const node: OutlineTreeNode = {
+			heading,
+			annotations: [],
+			children: [],
+		};
+		stack.at(-1)?.children.push(node);
+		stack.push(node);
+		flatNodes.push(node);
+	}
+
+	for (const annotation of annotations) {
+		let target = root;
+
+		for (const node of flatNodes) {
+			if ((node.heading?.position.start.offset ?? 0) <= annotation.from) {
+				target = node;
+				continue;
+			}
+
+			break;
+		}
+
+		target.annotations.push(annotation);
+	}
+
+	return root;
+}
+
 function buildAnnotationDescription(annotation: Annotation) {
 	const tokens = [
 		annotation.id ?? "legacy",
@@ -257,4 +422,11 @@ function makeClickable(element: HTMLElement, onClick: () => void | Promise<void>
 			void onClick();
 		}
 	});
+}
+
+function countAnnotations(node: OutlineTreeNode): number {
+	return (
+		node.annotations.length +
+		node.children.reduce((sum, child) => sum + countAnnotations(child), 0)
+	);
 }

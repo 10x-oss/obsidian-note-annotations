@@ -244,9 +244,15 @@
 .omnidian-outline-section__heading-setting {
 	padding-left: 0;
 	border-left: none;
+	border-radius: 0.5rem;
 }
 
-.omnidian-outline-section__heading-info .setting-item-name {
+.omnidian-outline-section__heading-info {
+	display: grid;
+	gap: 0.1rem;
+}
+
+.omnidian-outline-heading__title {
 	font-size: var(--font-ui-smaller);
 	font-weight: 700;
 	letter-spacing: 0.04em;
@@ -254,6 +260,7 @@
 	color: var(--text-muted);
 }
 
+.omnidian-outline-heading__meta,
 .omnidian-outline-section__heading-info .setting-item-description {
 	font-size: var(--font-ui-smaller);
 	color: var(--text-faint);
@@ -265,8 +272,24 @@
 	border-left: 1px solid var(--background-modifier-border);
 }
 
+.omnidian-outline-tree__node {
+	margin-bottom: 0.5rem;
+}
+
+.omnidian-outline-tree__children {
+	margin-left: 0.7rem;
+	padding-left: 0.75rem;
+	border-left: 1px solid var(--background-modifier-border);
+}
+
+.omnidian-outline-tree__heading {
+	margin-bottom: 0.3rem;
+}
+
 .omnidian-outline-item {
 	padding-left: 0.15rem;
+	padding-top: 0.25rem;
+	padding-bottom: 0.25rem;
 	border-left: 3px solid transparent;
 	border-radius: 0.5rem;
 }
@@ -275,14 +298,20 @@
 	border-left-color: var(--interactive-accent);
 }
 
-.omnidian-outline-item__info .setting-item-name {
+.omnidian-outline-item__info {
+	display: grid;
+	gap: 0.15rem;
+}
+
+.omnidian-outline-item__title {
 	font-size: var(--font-ui-small);
 	line-height: 1.35;
 }
 
-.omnidian-outline-item__info .setting-item-description {
+.omnidian-outline-item__description {
 	font-size: var(--font-ui-smaller);
 	line-height: 1.35;
+	color: var(--text-muted);
 }
 
 .omnidian-outline-clickable {
