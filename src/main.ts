@@ -1,7 +1,6 @@
 import {
 	Modal,
 	Notice,
-	Platform,
 	Plugin,
 	Setting,
 	TFile,
@@ -193,7 +192,6 @@ export default class OmnidianPlugin extends Plugin {
 
 		if (
 			!this.isHighlightingModeOn &&
-			!isPrimaryModifierPressed(event) &&
 			!("altKey" in event && event.altKey)
 		) {
 			return;
@@ -453,12 +451,4 @@ class AnnotationListModal extends Modal {
 
 function getModeText(isHighlightingModeOn: boolean) {
 	return `Highlighting: ${isHighlightingModeOn ? "ON" : "OFF"}`;
-}
-
-function isPrimaryModifierPressed(event: MouseEvent | TouchEvent) {
-	if (!("metaKey" in event) || !("ctrlKey" in event)) {
-		return false;
-	}
-
-	return Platform.isMacOS ? event.metaKey : event.ctrlKey;
 }

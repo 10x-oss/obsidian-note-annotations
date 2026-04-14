@@ -4,7 +4,7 @@ Better active reading experience in Obsidian.
 
 Currently implemented:
 
--   **Highlighting Mode**: automatically turn selected text in live preview mode into highlighted sections. Hold Command on Mac or Control on Windows to select text without highlighting. When Highlighting Mode is disabled, hold the modifier key to highlight text.
+-   **Highlighting Mode**: automatically turn selected text in live preview mode into highlighted sections. When Highlighting Mode is disabled, hold Alt while selecting to create a highlight without word-boundary expansion.
 -   **Comments**: click highlighted text in live preview to add comments. Shown as margin notes in the reading view.
 -   **Multicolor Highlights**: add `@{colorName}` to the comment to control the appearance of the highlight. Example: @yellow, @blue etc. Set available colors in the plugin options.
 
