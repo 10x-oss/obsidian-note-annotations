@@ -1,9 +1,11 @@
 import {
 	Modal,
+	MarkdownView,
 	Notice,
 	Plugin,
 	Setting,
 	TFile,
+	type WorkspaceLeaf,
 	type Editor,
 } from "obsidian";
 import {
@@ -51,6 +53,7 @@ export default class OmnidianPlugin extends Plugin {
 	settings: OmnidianSettings = DEFAULT_SETTINGS;
 	isHighlightingModeOn = false;
 	statusBarItemEl: HTMLElement | null = null;
+	private lastActiveNotePath: string | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -127,12 +130,17 @@ export default class OmnidianPlugin extends Plugin {
 		this.registerMarkdownPostProcessor(postprocessor(this));
 
 		this.registerEvent(
-			this.app.workspace.on("file-open", () => {
+			this.app.workspace.on("file-open", (file) => {
+				if (file instanceof TFile) {
+					this.rememberActiveFile(file);
+				}
+
 				void this.refreshAnnotationOutlineViews();
 			}),
 		);
 		this.registerEvent(
-			this.app.workspace.on("active-leaf-change", () => {
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				this.rememberActiveFile(this.getFileForLeaf(leaf));
 				void this.refreshAnnotationOutlineViews();
 			}),
 		);
@@ -142,7 +150,7 @@ export default class OmnidianPlugin extends Plugin {
 					return;
 				}
 
-				const activeFile = this.app.workspace.getActiveFile();
+				const activeFile = this.getCurrentContextFile();
 
 				if (activeFile && file.path === activeFile.path) {
 					await this.refreshAnnotationOutlineViews();
@@ -151,7 +159,7 @@ export default class OmnidianPlugin extends Plugin {
 		);
 		this.registerEvent(
 			this.app.metadataCache.on("changed", async (file) => {
-				const activeFile = this.app.workspace.getActiveFile();
+				const activeFile = this.getCurrentContextFile();
 
 				if (activeFile && file.path === activeFile.path) {
 					await this.refreshAnnotationOutlineViews();
@@ -231,7 +239,7 @@ export default class OmnidianPlugin extends Plugin {
 	}
 
 	async extractAnnotationToFile(annotation: Annotation) {
-		const currentFile = this.app.workspace.getActiveFile();
+		const currentFile = this.getCurrentContextFile();
 		const fileName =
 			sanitizeFilename(annotation.highlightText) || "Extracted annotation";
 		let path = `${fileName}.md`;
@@ -275,8 +283,31 @@ export default class OmnidianPlugin extends Plugin {
 		cleanupPopover();
 	}
 
+	getCurrentContextFile(): TFile | null {
+		const activeLeafFile = this.getFileForLeaf(this.app.workspace.activeLeaf);
+
+		if (activeLeafFile) {
+			this.rememberActiveFile(activeLeafFile);
+			return activeLeafFile;
+		}
+
+		const workspaceFile = this.app.workspace.getActiveFile();
+
+		if (workspaceFile instanceof TFile) {
+			this.rememberActiveFile(workspaceFile);
+			return workspaceFile;
+		}
+
+		if (!this.lastActiveNotePath) {
+			return null;
+		}
+
+		const cachedFile = this.app.vault.getAbstractFileByPath(this.lastActiveNotePath);
+		return cachedFile instanceof TFile ? cachedFile : null;
+	}
+
 	private async showAnnotationList() {
-		const file = this.app.workspace.getActiveFile();
+		const file = this.getCurrentContextFile();
 
 		if (!file) {
 			new Notice("No active file.");
@@ -295,7 +326,7 @@ export default class OmnidianPlugin extends Plugin {
 	}
 
 	private async removeAllAnnotations() {
-		const file = this.app.workspace.getActiveFile();
+		const file = this.getCurrentContextFile();
 
 		if (!file) {
 			new Notice("No active file.");
@@ -324,6 +355,10 @@ export default class OmnidianPlugin extends Plugin {
 	}
 
 	async jumpToAnnotation(file: TFile, contents: string, annotation: Annotation) {
+		if (await this.jumpInBookMode(file, annotation.from)) {
+			return;
+		}
+
 		await this.app.workspace.getLeaf(true).openFile(file);
 
 		const editor = this.app.workspace.activeEditor?.editor;
@@ -344,6 +379,10 @@ export default class OmnidianPlugin extends Plugin {
 	}
 
 	async jumpToOffset(file: TFile, contents: string, offset: number) {
+		if (await this.jumpInBookMode(file, offset)) {
+			return;
+		}
+
 		await this.app.workspace.getLeaf(true).openFile(file);
 
 		const editor = this.app.workspace.activeEditor?.editor;
@@ -395,6 +434,57 @@ export default class OmnidianPlugin extends Plugin {
 				await leaf.view.refresh();
 			}
 		}
+	}
+
+	private async jumpInBookMode(file: TFile, offset: number): Promise<boolean> {
+		const bookModeView = this.findBookModeViewForFile(file);
+
+		if (!bookModeView) {
+			return false;
+		}
+
+		const didJump = await bookModeView.jumpToSourceOffset(offset);
+
+		if (didJump) {
+			await this.app.workspace.revealLeaf(bookModeView.leaf);
+		}
+
+		return didJump;
+	}
+
+	private rememberActiveFile(file: TFile | null) {
+		if (file) {
+			this.lastActiveNotePath = file.path;
+		}
+	}
+
+	private getFileForLeaf(leaf: WorkspaceLeaf | null | undefined): TFile | null {
+		const view = leaf?.view;
+
+		if (view instanceof MarkdownView) {
+			return view.file ?? null;
+		}
+
+		const maybeFile = (view as { getFile?: () => unknown } | undefined)?.getFile?.();
+		return maybeFile instanceof TFile ? maybeFile : null;
+	}
+
+	private findBookModeViewForFile(file: TFile): BookModeJumpableView | null {
+		for (const leaf of this.app.workspace.getLeavesOfType("book-mode-reader")) {
+			const view = leaf.view as Partial<BookModeJumpableView>;
+
+			if (typeof view.getFile !== "function" || typeof view.jumpToSourceOffset !== "function") {
+				continue;
+			}
+
+			const activeFile = view.getFile();
+
+			if (activeFile instanceof TFile && activeFile.path === file.path) {
+				return view as BookModeJumpableView;
+			}
+		}
+
+		return null;
 	}
 }
 
@@ -451,4 +541,10 @@ class AnnotationListModal extends Modal {
 
 function getModeText(isHighlightingModeOn: boolean) {
 	return `Highlighting: ${isHighlightingModeOn ? "ON" : "OFF"}`;
+}
+
+interface BookModeJumpableView {
+	leaf: WorkspaceLeaf;
+	getFile(): TFile | null;
+	jumpToSourceOffset(offset: number): Promise<boolean>;
 }

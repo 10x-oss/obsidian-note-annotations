@@ -53,7 +53,7 @@ export class AnnotationsOutlineView extends ItemView {
 		contentEl.empty();
 		contentEl.addClass("omnidian-outline-view");
 
-		const file = this.plugin.app.workspace.getActiveFile();
+		const file = this.plugin.getCurrentContextFile();
 
 		if (!file) {
 			contentEl.createDiv({
